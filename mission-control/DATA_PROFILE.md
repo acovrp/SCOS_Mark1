@@ -50,6 +50,21 @@ There is **no `internal_sku_id` column**; the dashboard's `channels` object is t
 de-facto SKU master. First build dependency = derive a clean SKU↔line↔ASIN map
 from `ads_daily` + `snapshot.json` and show unmapped rows (never drop silently).
 
+## snapshot.json week bucketing (contract — verified)
+
+`snapshot.json` months are **sequential ISO-week groups, NOT calendar months**:
+`jan`=W01–05, `feb`=W06–09, **`mar`=W10–14**, `apr`=W15–18, `may`=W19–22
+(`weeklyWeeks` lists W01–W22). Any reconciliation against the live dashboard
+must use this bucketing, or it will look ~25% off when it is actually correct.
+
+## Validation result (slice_amazon.py, Original Mattress)
+
+- **Ad spend reconciles to −0.00%** vs `snapshot.originalmatt.amz.adspend.mar`
+  → the raw-data pipeline reads ads **identically** to the live dashboard.
+- **Revenue is −14.6%** (week-aligned) → entirely the organic-only ASIN coverage
+  gap. Confirms the binding dependency: an **ASIN→line master** is required for
+  accurate revenue (PRD §29). Pipeline is correct; the input is missing.
+
 ## Recommended analysis window
 
 Dense overlap of the daily Amazon sources (`ads_daily` ∩ `br_history`) is
