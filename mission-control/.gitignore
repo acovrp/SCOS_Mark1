@@ -1,0 +1,6 @@
+# SleepyCat raw business data is NEVER committed here. Read-only, kept external.
+data/
+*.csv
+*.parquet
+__pycache__/
+*.pyc
