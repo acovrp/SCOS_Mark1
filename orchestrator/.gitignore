@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+# Runtime state + generated app live outside version control by default.
+.orchestrator/
+build/
+.pytest_cache/

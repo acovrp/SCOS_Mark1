@@ -1,0 +1,8 @@
+# Core orchestrator has ZERO runtime dependencies (stdlib only) and is fully
+# testable offline with the stub backend.
+
+# Dev:
+pytest>=7
+
+# Only needed for the live `--llm claude` backend (plus ANTHROPIC_API_KEY):
+#   pip install claude-agent-sdk
