@@ -13,8 +13,14 @@ Line membership = SKU prefix (e.g. SC-ORIG -> Original Mattress). br_history
 ASINs that are never advertised cannot be line-mapped via this bridge; their
 count is reported, never silently dropped.
 
+Line membership comes from the SKU Master (ASIN→PRODUCT) when a master file is
+given — this includes organic-only ASINs and makes revenue reconcile. Without a
+master it falls back to the SKU-prefix heuristic from ads_daily (advertised
+ASINs only).
+
 Nothing is written; the live dashboard and raw data are untouched.
-Usage:  python slice_amazon.py [DATA_DIR] [SKU_PREFIX]
+Usage:  python slice_amazon.py [DATA_DIR] [LINE] [MASTER_XLSX]
+  LINE = PRODUCT name (with master, e.g. "Original Mattress") or SKU prefix.
 """
 from __future__ import annotations
 
@@ -27,7 +33,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 DATA = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/tmp/pwa-data/data")
-PREFIX = sys.argv[2] if len(sys.argv) > 2 else "SC-ORIG"
+MASTER = Path(sys.argv[3]) if len(sys.argv) > 3 else None
+# With a master, LINE is a PRODUCT name; without one, a SKU prefix.
+LINE_ARG = sys.argv[2] if len(sys.argv) > 2 else ("Original Mattress" if MASTER else "SC-ORIG")
 
 # SKU prefix -> (friendly line name, snapshot.json channel id for reconciliation)
 LINE_MAP = {
@@ -36,7 +44,16 @@ LINE_MAP = {
     "SC-HYB": ("Hybrid Latex Mattress", "hybridlatexm"),
     "SC-CLD": ("Cloud Pillow", "cloudpillows"),
 }
-LINE_NAME, SNAP_LINE = LINE_MAP.get(PREFIX, (PREFIX, None))
+# PRODUCT name -> snapshot.json channel id (for reconciliation in master mode).
+PRODUCT_SNAP = {
+    "Original Mattress": "originalmatt",
+    "Hybrid Latex Mattress": "hybridlatexm",
+    "Cloud Pillow": "cloudpillows",
+}
+if MASTER:
+    LINE_NAME, SNAP_LINE = LINE_ARG, PRODUCT_SNAP.get(LINE_ARG)
+else:
+    LINE_NAME, SNAP_LINE = LINE_MAP.get(LINE_ARG, (LINE_ARG, None))
 
 # Sponsored Brands Video is a flavour of Sponsored Brands for this view.
 AD_TYPE_GROUP = {"SP": "SP", "SD": "SD", "SB": "SB", "SBV": "SB"}
@@ -94,15 +111,23 @@ class Agg:
         return 100 * (self.revenue - self.ad_sales) / self.revenue if self.revenue else 0.0
 
 
-def build_asin_set(prefix: str) -> tuple[set[str], set[str]]:
-    """Return (line ASINs, line SKUs) from ads_daily via SKU prefix."""
-    asins, skus = set(), set()
+def build_asin_set() -> tuple[set[str], str]:
+    """Return (line ASINs, source description).
+
+    Master mode: ASINs where PRODUCT == LINE_ARG (includes organic-only ASINs).
+    Fallback: advertised ASINs whose SKU starts with the LINE_ARG prefix.
+    """
+    if MASTER:
+        from sku_master import SkuMaster
+        m = SkuMaster.from_xlsx(MASTER)
+        asins = m.asins_for_product(LINE_ARG)
+        return asins, f"SKU Master PRODUCT='{LINE_ARG}' ({len(asins)} ASINs)"
+    asins = set()
     with (DATA / "ads_daily.csv").open(encoding="utf-8") as f:
         for r in csv.DictReader(f):
-            if r["sku"].strip().startswith(prefix):
+            if r["sku"].strip().startswith(LINE_ARG):
                 asins.add(r["asin"].strip())
-                skus.add(r["sku"].strip())
-    return asins, skus
+    return asins, f"ads-prefix '{LINE_ARG}' — advertised ASINs only ({len(asins)})"
 
 
 def _matches(d: dt.date | None, label: str) -> bool:
@@ -150,18 +175,17 @@ def aggregate(asins: set[str]) -> dict[str, Agg]:
 
 
 def coverage_report(line_asins: set[str]) -> str:
-    br_asins, ads_asins = set(), set()
     with (DATA / "br_history.csv").open(encoding="utf-8") as f:
         br_asins = {r["asin"].strip() for r in csv.DictReader(f)}
+    present = len(line_asins & br_asins)
+    if MASTER:
+        return (f"{len(line_asins)} ASINs in line (from master, incl. organic-only); "
+                f"{present} present in br_history.")
     with (DATA / "ads_daily.csv").open(encoding="utf-8") as f:
         ads_asins = {r["asin"].strip() for r in csv.DictReader(f)}
-    mapped = line_asins & br_asins
-    return (
-        f"{len(line_asins)} ASINs in line (from ads); "
-        f"{len(mapped)} of them present in br_history. "
-        f"Global: {len(br_asins - ads_asins)} organic-only ASINs are unmapped "
-        f"(no ad bridge) — out of scope for this line view."
-    )
+    return (f"{len(line_asins)} ASINs in line (advertised only); {present} in br_history. "
+            f"{len(br_asins - ads_asins)} organic-only ASINs unmapped without a master "
+            f"-> revenue will undercount. Pass a master to fix.")
 
 
 def snapshot_march(snap_line: str) -> dict | None:
@@ -213,15 +237,16 @@ def print_week_block(name: str, b: Agg) -> None:
 def main() -> None:
     if not DATA.exists():
         sys.exit(f"data dir not found: {DATA}")
-    line_asins, line_skus = build_asin_set(PREFIX)
+    line_asins, src = build_asin_set()
     if not line_asins:
-        sys.exit(f"no ASINs found for prefix {PREFIX}")
+        sys.exit(f"no ASINs found for line {LINE_ARG!r}")
     b = aggregate(line_asins)
     curr, prev = b["curr"], b["prev"]
 
     print("=" * 64)
-    print(f"  {LINE_NAME}  [{PREFIX}]   — Amazon, real data, read-only")
+    print(f"  {LINE_NAME}   — Amazon, real data, read-only")
     print("=" * 64)
+    print(f"  line source: {src}")
     print(f"  coverage: {coverage_report(line_asins)}")
 
     print(f"\n  WEEK-OVER-WEEK  (curr {WEEK_CURR[0]}..{WEEK_CURR[1]} vs prev {WEEK_PREV[0]}..{WEEK_PREV[1]})")
@@ -250,13 +275,21 @@ def main() -> None:
     recon = b["recon"]
     if snap:
         print(f"    {'metric':<10}{'computed':>16}{'snapshot':>16}{'delta':>10}")
-        print(f"    {'ad spend':<10}{inr(recon.ad_spend):>16}{inr(snap['adspend']):>16}{delta_pct(recon.ad_spend, snap['adspend']):>10}  <- proves we read ads identically")
-        print(f"    {'revenue':<10}{inr(recon.revenue):>16}{inr(snap['revenue']):>16}{delta_pct(recon.revenue, snap['revenue']):>10}  <- gap = organic-only ASINs not in ad bridge")
-        print(f"    {'TACoS':<10}{pct(recon.tacos):>16}{pct(snap['tacos_computed']):>16}{delta_pct(recon.tacos, snap['tacos_computed']):>10}  (follows revenue gap)")
-        adspend_ok = abs(recon.ad_spend - snap["adspend"]) / snap["adspend"] < 0.01 if snap["adspend"] else False
-        print(f"\n    VERDICT: ad-spend reconciliation {'PASSES (<1%)' if adspend_ok else 'FAILS'}; "
-              f"revenue is undercounted until an ASIN->line master adds the\n"
-              f"    organic-only ASINs. The pipeline reads correctly; the missing input is line membership.")
+        print(f"    {'ad spend':<10}{inr(recon.ad_spend):>16}{inr(snap['adspend']):>16}{delta_pct(recon.ad_spend, snap['adspend']):>10}   ads_daily")
+        print(f"    {'revenue':<10}{inr(recon.revenue):>16}{inr(snap['revenue']):>16}{delta_pct(recon.revenue, snap['revenue']):>10}   br_history{' (incl. organic-only via master)' if MASTER else ' (advertised only)'}")
+        print(f"    {'TACoS':<10}{pct(recon.tacos):>16}{pct(snap['tacos_computed']):>16}{delta_pct(recon.tacos, snap['tacos_computed']):>10}   spend/revenue")
+        def ok(a, b):
+            return bool(b) and abs(a - b) / b < 0.01
+        spend_ok = ok(recon.ad_spend, snap["adspend"])
+        rev_ok = ok(recon.revenue, snap["revenue"])
+        if spend_ok and rev_ok:
+            print("\n    VERDICT: FULL reconciliation to the live dashboard (<1% on spend AND revenue).\n"
+                  "    The raw-data pipeline reads Amazon identically to your snapshot, via the SKU Master.")
+        elif spend_ok:
+            print("\n    VERDICT: ad spend reconciles (<1%); revenue is undercounted because line\n"
+                  "    membership is advertised-ASIN-only. Pass the SKU Master to close the revenue gap.")
+        else:
+            print("\n    VERDICT: reconciliation FAILS — investigate before trusting these numbers.")
     else:
         print(f"    (no snapshot channel for {SNAP_LINE})")
 

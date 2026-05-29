@@ -57,13 +57,25 @@ from `ads_daily` + `snapshot.json` and show unmapped rows (never drop silently).
 (`weeklyWeeks` lists W01–W22). Any reconciliation against the live dashboard
 must use this bucketing, or it will look ~25% off when it is actually correct.
 
+## THE PRIMARY KEY — All Portal Mastersheet.xlsx (sheet "New Master")
+
+The cross-portal join key. ~2,150 rows; one row per internal SKU:
+
+`Master SKU · Website SKU · ASIN · Flipkart · Myntra · Flex-1/Flex-2/SS (warehouse SKUs) · PRODUCT · CATEGORY · MRP · regional stock (BLR/MUM/GGN/CHN/HYB) · S&OP`
+
+- **832 ASINs → PRODUCT/CATEGORY**, **846 Flipkart SKUs**, 55 products.
+- Covers **689 of 801** `br_history` ASINs (the 112 stragglers carry ~0 revenue).
+- Read with stdlib only (`sku_master.py`); `openpyxl` not required.
+- Lives on branch `claude/spreadsheet-to-git-repo-DxPup` (hello-world). Treated
+  as read-only external input — never committed into this tree.
+
 ## Validation result (slice_amazon.py, Original Mattress)
 
-- **Ad spend reconciles to −0.00%** vs `snapshot.originalmatt.amz.adspend.mar`
-  → the raw-data pipeline reads ads **identically** to the live dashboard.
-- **Revenue is −14.6%** (week-aligned) → entirely the organic-only ASIN coverage
-  gap. Confirms the binding dependency: an **ASIN→line master** is required for
-  accurate revenue (PRD §29). Pipeline is correct; the input is missing.
+- **Master mode → FULL reconciliation:** ad spend −0.00%, revenue +0.00%,
+  TACoS −0.00% vs `snapshot.originalmatt.amz.*.mar`. The raw-data pipeline reads
+  Amazon **identically** to the live dashboard, via the SKU Master.
+- Fallback mode (advertised ASINs only, no master): ad spend −0.00% but revenue
+  −14.6% — which is exactly why the master is the binding dependency (PRD §29).
 
 ## Recommended analysis window
 
